@@ -191,7 +191,15 @@ EOF
         echo -e "  输入 ${CYAN}mpd2hls${NC} 可随时返回此管理面板"
         echo ""
     else
-        error "服务启动失败，请运行: journalctl -u $SERVICE_NAME -n 50"
+        echo ""
+        warn "服务启动失败，错误日志如下："
+        echo "────────────────────────────────────────"
+        journalctl -u "$SERVICE_NAME" -n 30 --no-pager 2>/dev/null || true
+        echo "────────────────────────────────────────"
+        echo ""
+        read -rp "按回车返回菜单..." _
+        show_menu
+        return
     fi
 
     read -rp "按回车返回菜单..." _
