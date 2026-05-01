@@ -123,6 +123,11 @@ do_install() {
     title "╚══════════════════════════════════════════════╝"
     echo ""
 
+    # 检查 systemd
+    if ! command -v systemctl &>/dev/null; then
+        error "当前系统不支持 systemd，无法安装（请使用 Ubuntu 16.04+ / Debian 8+ / CentOS 7+ 等标准系统，不支持 OpenVZ 容器）"
+    fi
+
     # 检查架构
     if [ -z "$DOWNLOAD_URL" ]; then
         error "不支持的系统架构: $ARCH（支持 x86_64 / aarch64 / armv7l）"
