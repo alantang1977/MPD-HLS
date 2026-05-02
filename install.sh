@@ -373,13 +373,22 @@ do_update() {
     step "停止服务..."
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 
-    step "下载最新版本..."
+    step "下载最新程序..."
     if command -v curl &>/dev/null; then
-        curl -L --progress-bar -o "$INSTALL_DIR/$BINARY_NAME" "$DOWNLOAD_URL" || error "下载失败"
+        curl -L --progress-bar -o "$INSTALL_DIR/$BINARY_NAME" "$DOWNLOAD_URL" || error "下载程序失败"
     else
-        wget --show-progress -O "$INSTALL_DIR/$BINARY_NAME" "$DOWNLOAD_URL" || error "下载失败"
+        wget --show-progress -O "$INSTALL_DIR/$BINARY_NAME" "$DOWNLOAD_URL" || error "下载程序失败"
     fi
     chmod +x "$INSTALL_DIR/$BINARY_NAME"
+
+    step "更新管理脚本..."
+    if command -v curl &>/dev/null; then
+        curl -sL "$INSTALL_SCRIPT_URL" -o "$SCRIPT_PATH.tmp" && mv "$SCRIPT_PATH.tmp" "$SCRIPT_PATH" && chmod +x "$SCRIPT_PATH" \
+            && success "管理脚本已更新" || warn "管理脚本更新失败（程序已更新）"
+    else
+        wget -qO "$SCRIPT_PATH.tmp" "$INSTALL_SCRIPT_URL" && mv "$SCRIPT_PATH.tmp" "$SCRIPT_PATH" && chmod +x "$SCRIPT_PATH" \
+            && success "管理脚本已更新" || warn "管理脚本更新失败（程序已更新）"
+    fi
 
     step "重启服务..."
     systemctl start "$SERVICE_NAME"
@@ -393,7 +402,7 @@ do_update() {
     fi
     echo ""
     read -rp "  按回车返回菜单..." _
-    show_menu
+    exec "$SCRIPT_PATH"
 }
 
 # ─── 安装管理命令 ─────────────────────────────────────────────────────────────
