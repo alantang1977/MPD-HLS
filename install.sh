@@ -3,9 +3,9 @@
 #  mpd2hls 一键远程安装脚本
 # ------------------------------------------------------------
 #  用法:
-#    curl -fsSL https://raw.githubusercontent.com/judy-gotv/mpd2hls/main/install.sh | bash
+#    curl -fsSL https://raw.githubusercontent.com/judy-gotv/MPD-HLS/main/install.sh | bash
 #    或
-#    wget -qO- https://raw.githubusercontent.com/judy-gotv/mpd2hls/main/install.sh | bash
+#    wget -qO- https://raw.githubusercontent.com/judy-gotv/MPD-HLS/main/install.sh | bash
 #
 #  非交互一键模式:
 #    curl -fsSL ... | bash -s install      # 直接安装+启动
@@ -40,7 +40,7 @@ PANEL_PORT="${PANEL_PORT:-9527}"
 PANEL_ADMIN_PATH="${PANEL_ADMIN_PATH:-/admin}"
 
 # GitHub Releases - latest 自动指向最新版本
-GH_REPO="${GH_REPO:-judy-gotv/mpd2hls}"
+GH_REPO="${GH_REPO:-judy-gotv/MPD-HLS}"
 GH_RELEASE_TAG="${GH_RELEASE_TAG:-latest}"
 if [ "$GH_RELEASE_TAG" = "latest" ]; then
   GH_BASE="https://github.com/${GH_REPO}/releases/latest/download"
@@ -526,7 +526,7 @@ mpd2hls 一键安装脚本
   INSTALL_DIR=/opt/mpd2hls       # 安装目录
   PANEL_PORT=9527                # 面板端口
   PANEL_ADMIN_PATH=/admin        # 面板路径
-  GH_REPO=judy-gotv/mpd2hls      # GitHub 仓库
+  GH_REPO=judy-gotv/MPD-HLS      # GitHub 仓库
   GH_RELEASE_TAG=latest          # 版本号，如 0.2.33
 
 示例：
