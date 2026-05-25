@@ -19,7 +19,7 @@
 ![image.png](https://img.111451444.xyz/files/QWdBRGd3Y0FBanBFaVVROrjsT8uPrpcs3ByAM9sZYSO8Fn2KAN10nQn3HtoSc9UW.png)
 ---
 
-## 快速安装
+## 快速安装   重要提示  先看完本页文章（尤其是小白用户）
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/judy-gotv/MPD-HLS/main/install.sh)
