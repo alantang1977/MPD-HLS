@@ -1,9 +1,6 @@
 <div align="center">
-<p align="center">
-  <a href="README.md"><img src="https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-red?style=for-the-badge" alt="中文"></a>
-  <a href="README.en.md"><img src="https://img.shields.io/badge/lang-English-blue?style=for-the-badge" alt="English"></a>
-</p>
 
+# MPD2HLS
 
 **MPD/DASH → HLS 转换服务 · 一键安装 · 自动管理**
 
@@ -14,15 +11,21 @@
 </div>
 
 
-![image.png](https://img.111451444.xyz/files/QWdBRG1Ra0FBckJMaUVROmi4hPWqlGqfZE3IHsRnzoHD6in0kSoOMD9tp749Sr7a.png)
-![image.png](https://img.111451444.xyz/files/QWdBRGlRZ0FBcWhra0VROg2hQ-8vWoztd7ZQAnN42Bqp5SBjwMVsKywTAbS3Uan0.png)
-![image.png](https://img.111451444.xyz/files/QWdBRGdnY0FBanBFaVVROmCT6cIbSEeAYIIccqOmFn_nKy6IdxO-FH1ssUXt1w07.png)
-![image.png](https://img.111451444.xyz/files/QWdBRGpBZ0FBcWhra0VROjJ1dBg0rHlQmpyyvlzr4jQomPmDh_Qc5hdoOBwSa1Eq.png)
-![image.png](https://img.111451444.xyz/files/QWdBRG1na0FBckJMaUVROlB2c5BrkAVs7VFF_fWe1L7Rvx5vPf43vPgRHlYEhG4N.png)
-![image.png](https://img.111451444.xyz/files/QWdBRGd3Y0FBanBFaVVROrjsT8uPrpcs3ByAM9sZYSO8Fn2KAN10nQn3HtoSc9UW.png)
+![image.png](https://img.111451444.xyz/files/QWdBREZ3Y0FBbThMR0VROgAzodnW-XKJmhFdhfhC7traxIErDTau3D7kH6g6Ogxw.png)
+![image.png](https://img.111451444.xyz/files/QWdBRDV3WUFBaVVfR0VROnhDrm2M3NAY7nK1sIj80G1hyKkveFhna7ng-b7Ur0or.png)
+![image.png](https://img.111451444.xyz/files/QWdBRGNBY0FBckNuR1VROpnF2jNRQgiZD67VUUybwI9Sg49TKaxHmPWT4rgdDzd6.png)
+![image.png](https://img.111451444.xyz/files/QWdBRGJnY0FBckNuR1VROk9gapnpudyymkSl6vaPOH3HNPemWxKsOYoSOjcgX47T.png)
+![image.png](https://img.111451444.xyz/files/QWdBREdBY0FBbThMR0VROnHXIHS2Ma1ArSt67xv8539Fij600jfOLWe8G7od14_z.png)
+![image.png](https://img.111451444.xyz/files/QWdBREdnY0FBbThMR0VROrCuANfwaPuxxj5ZCeAuZg2a8kJw2Pa2jIFzPJE-OUIC.png)
+![image.png](https://img.111451444.xyz/files/QWdBRDZBWUFBaVVfR0VROpwMIqCgzqAPDoPiVXlQ1wTEE8LWUH31cEU9CdeZSPuF.png)
+![image.png](https://img.111451444.xyz/files/QWdBRGJ3Y0FBckNuR1VROo_dV1vLs97uYEM4Omftwo2T8CYNSIbHFiT_opgzB0bF.png)
+![image.png](https://img.111451444.xyz/files/QWdBREdRY0FBbThMR0VROqN18wGaNaHGm8HwK_5dSIQuiRsI0Gw-kwZQljJpDFES.png)
+![image.png](https://img.111451444.xyz/files/QWdBRDZRWUFBaVVfR0VROmIPgo4J5b_T2q2RQqBXw6F0GuAZU9XxIqh9GJtZ-FQ_.png)
+
+
 ---
 
-## 快速安装   重要提示  先看完本页文章（尤其是小白用户）
+## 快速安装
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/judy-gotv/MPD-HLS/main/install.sh)
@@ -348,6 +351,29 @@ nginx -s reload
 systemctl reload nginx
 ```
 
+### ⚠️ 字体上传 / 大请求体（必看）
+
+面板支持上传 PGS 字幕字体（ttf/otf/ttc），单个最大 **96 MB**。
+Nginx 默认 `client_max_body_size` 只有 **1 MB**，字体动辄几 MB ~ 几十 MB，**不改会直接 413**。
+
+在对外 server 块（`listen 443 ssl` 或 `listen 80` 那个）顶部加：
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name iptv.example.com;
+
+    client_max_body_size 128m;       # ← 必须加
+    client_body_timeout  120s;
+
+    # ...其余配置
+}
+```
+
+修改后 `nginx -t && nginx -s reload` 生效。
+
+> 走 Cloudflare 的话，**免费版**上传上限 100 MB；如果字体接近这个值，请暂时把橙云改成灰云直连。
+
 ### 启用 HTTPS（推荐）
 
 使用 [acme.sh](https://github.com/acmesh-official/acme.sh) 或 [certbot](https://certbot.eff.org/) 自动签发 Let's Encrypt 免费证书：
@@ -398,6 +424,62 @@ http://iptv.example.com/ch/<频道ID>/master.m3u8
 
 ---
 
+## 字幕字体配置
+
+PGS 字幕由后端把 TTML 渲染成位图后内嵌到视频流，需要一个 ttf/otf/ttc 字体。
+
+### 默认字体路径
+
+```
+./fonts/DFPHeiMedium-B5.ttf      （相对 systemd 的 WorkingDirectory，即 /opt/mpd2hls/）
+```
+
+也就是说默认会去读 `/opt/mpd2hls/fonts/DFPHeiMedium-B5.ttf`。
+
+### 修改字体的三种方法
+
+**方法 A：面板上传（推荐，最简单）**
+
+进入面板 → **字幕设置** → 点击「上传字体」按钮。
+- 支持 ttf / otf / ttc
+- 单个文件最大 96 MB
+- 上传成功后自动写入 `channels.json` 的 `subtitle_settings.font_path`，**无需重启**
+
+⚠️ **文件名请使用纯英文 / 数字 / `._-`**。HTTP 头不支持非 ASCII 字符，含中文文件名会被浏览器拒绝：
+```
+失败：方正黑体.ttf  →  Failed to read 'headers' property: non ISO-8859-1
+正确：fzhei.ttf / SourceHanSans.otf
+```
+
+⚠️ 如果走 nginx 反代，**必须**先按上文设置 `client_max_body_size 128m;`，否则会 413。
+
+**方法 B：替换同名文件（不重启程序也不动配置）**
+
+把你的字体重命名为默认值并替换：
+```bash
+cp /path/to/myfont.ttf /opt/mpd2hls/fonts/DFPHeiMedium-B5.ttf
+systemctl restart mpd2hls-panel
+```
+
+**方法 C：面板里指定路径**
+
+进面板 → **字幕设置** → **主字体路径** 输入框 → 填：
+```
+./fonts/你的字体.ttf
+# 或绝对路径
+/opt/mpd2hls/fonts/myfont.ttf
+```
+点保存，立即生效。
+
+### 字体推荐
+
+- **中文**：思源黑体 `SourceHanSansSC-Regular.otf` / 方正黑体 / OPPOSans
+- **中英混排**：思源黑体 OTF（中英文覆盖最完整）
+
+> ⚠️ 不支持 woff / woff2 / eot 格式。
+
+---
+
 ## 修改密码 / 重置密码
 
 ### 方法一：在面板中修改（推荐）
@@ -443,9 +525,10 @@ bash install.sh password
 ├── mpd2hls              # 主程序
 ├── mpd2hls.env          # 环境变量配置（编辑后需重启服务）
 ├── panel_auth.json      # 账号认证文件（密码哈希）
-├── channels.json        # 频道配置
+├── channels.json        # 频道配置 (含 subtitle_settings.font_path)
 ├── panel_api_token      # API 令牌
-└── audit.log            # 审计日志
+├── audit.log            # 审计日志
+└── fonts/               # 字幕字体目录（默认读 DFPHeiMedium-B5.ttf）
 
 /etc/systemd/system/
 └── mpd2hls-panel.service  # 系统服务文件
