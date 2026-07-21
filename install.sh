@@ -216,6 +216,7 @@ download_binary_asset() {
   local tmp="/tmp/mpd2hls-$arch.$$"
   rm -f "$tmp"
   if ! curl -fL --progress-bar -o "$tmp" "$url"; then
+    rm -f "$tmp"
     error "下载失败，请检查网络或 GitHub 是否可访问"
   fi
   log "  - 已下载: $(du -h "$tmp" | cut -f1) -> $tmp"
@@ -485,7 +486,6 @@ migrate_legacy_service() {
 }
 
 write_systemd_service() {
-  migrate_legacy_service || return 1
   step "写入 systemd 服务 $SERVICE_FILE ..."
   if ! $SUDO tee "$SERVICE_FILE" >/dev/null <<EOF
 [Unit]
@@ -515,6 +515,7 @@ EOF
   fi
   $SUDO systemctl daemon-reload || return 1
   $SUDO systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || return 1
+  migrate_legacy_service || return 1
   log "  - 已写入并启用开机自启 ✅"
 }
 
