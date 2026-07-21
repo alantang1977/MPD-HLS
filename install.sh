@@ -26,7 +26,7 @@ NC='\033[0m'
 
 log()   { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
-error() { echo -e "${RED}[ERR ]${NC} $*"; exit 1; }
+error() { echo -e "${RED}[ERR ]${NC} $*" >&2; exit 1; }
 step()  { echo -e "${MAGENTA}[STEP]${NC} ${BOLD}$*${NC}"; }
 
 # ---------------- 默认配置 ----------------
@@ -35,7 +35,6 @@ BIN_PATH="${INSTALL_DIR}/mpd2hls"
 ENV_FILE="${INSTALL_DIR}/mpd2hls.env"
 MANAGER_SCRIPT_PATH="${INSTALL_DIR}/install.sh"
 INSTALLER_API_VERSION="3"
-INSTALLER_RELEASE_VERSION="0.0.32"
 SERVICE_NAME="mpd2hls"
 LEGACY_SERVICE_NAME="mpd2hls-panel"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
@@ -58,13 +57,33 @@ release_tag_path() {
   esac
 }
 
-expected_release_version() {
-  local tag="$1"
-  case "$tag" in
-    ''|latest) echo "$INSTALLER_RELEASE_VERSION" ;;
-    v*) echo "${tag#v}" ;;
-    *) echo "$tag" ;;
+resolve_release_tag() {
+  local requested="${1:-latest}"
+  local resolved final_url
+  if [ -n "${MPD2HLS_LATEST_TAG:-}" ] && { [ -z "$requested" ] || [ "$requested" = "latest" ]; }; then
+    resolved="$MPD2HLS_LATEST_TAG"
+  elif [ -z "$requested" ] || [ "$requested" = "latest" ]; then
+    step "解析 GitHub 最新稳定版本 ..." >&2
+    final_url="$(curl -fsSL --retry 3 --connect-timeout 10 --max-time 30 \
+      -o /dev/null -w '%{url_effective}' \
+      "https://github.com/${GH_REPO}/releases/latest")" || \
+      error "无法解析 GitHub latest 版本，现有服务未改动"
+    resolved="${final_url##*/}"
+  else
+    resolved="$(release_tag_path "$requested")"
+  fi
+  if ! echo "$resolved" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+    error "Release 标签格式无效: ${resolved:-empty}"
+  fi
+  case "$resolved" in
+    v*) echo "$resolved" ;;
+    *) echo "v${resolved}" ;;
   esac
+}
+
+release_version() {
+  local tag="$1"
+  echo "${tag#v}"
 }
 
 installer_url() {
@@ -211,7 +230,7 @@ download_binary_asset() {
   log "  - 二进制角色校验: panel ✅"
   binary_version="$("$tmp" --version 2>/dev/null || true)"
   actual_version="${binary_version##* }"
-  expected_version="$(expected_release_version "$tag")"
+  expected_version="$(release_version "$tag")"
   if [ "$actual_version" != "$expected_version" ]; then
     rm -f "$tmp"
     error "二进制版本不匹配：期望 ${expected_version}，实际 ${actual_version:-unknown}；现有服务未改动"
@@ -241,41 +260,22 @@ download_binary() {
 validate_manager_script() {
   local path="$1"
   bash -n "$path" && \
-    grep -q '^INSTALLER_API_VERSION="3"$' "$path" && \
-    grep -Eq '^INSTALLER_RELEASE_VERSION="[^"]+"$' "$path"
+    grep -q '^INSTALLER_API_VERSION="3"$' "$path"
 }
 
 download_manager_script() {
   local tag="${1:-$GH_RELEASE_TAG}"
-  local url tmp fallback_url="" manager_version expected_version
+  local url tmp
   url="$(installer_url "$tag")"
   tmp="/tmp/mpd2hls-install.$$"
   rm -f "$tmp"
   step "下载并校验最新管理脚本 ..."
   log "  - URL: $url"
   if ! curl -fL --progress-bar -o "$tmp" "$url" || ! validate_manager_script "$tmp"; then
-    if [ "$tag" = "latest" ] && [ -z "${MPD2HLS_INSTALLER_URL:-}" ]; then
-      fallback_url="https://raw.githubusercontent.com/${GH_REPO}/main/install.sh"
-      warn "Release 管理脚本缺失或不兼容，尝试主分支: $fallback_url"
-      rm -f "$tmp"
-      if ! curl -fL --progress-bar -o "$tmp" "$fallback_url" || ! validate_manager_script "$tmp"; then
-        rm -f "$tmp"
-        error "管理脚本下载或兼容性校验失败，现有服务和二进制未改动"
-      fi
-    else
-      rm -f "$tmp"
-      error "管理脚本下载或兼容性校验失败，现有服务和二进制未改动"
-    fi
+    rm -f "$tmp"
+    error "管理脚本下载或兼容性校验失败，现有服务和二进制未改动"
   fi
-  manager_version="$(sed -n 's/^INSTALLER_RELEASE_VERSION="\([^"]*\)"$/\1/p' "$tmp" | head -1)"
-  if [ "$tag" != "latest" ] && [ -n "$tag" ]; then
-    expected_version="$(expected_release_version "$tag")"
-    if [ "$manager_version" != "$expected_version" ]; then
-      rm -f "$tmp"
-      error "管理脚本版本不匹配：期望 ${expected_version}，实际 ${manager_version:-unknown}"
-    fi
-  fi
-  log "  - 管理脚本版本校验: ${manager_version} ✅"
+  log "  - 管理脚本兼容性校验: API ${INSTALLER_API_VERSION} ✅"
   chmod 0755 "$tmp"
   DOWNLOADED_MANAGER_SCRIPT="$tmp"
 }
@@ -714,6 +714,8 @@ do_install() {
   fi
   prepare_basics
   prepare_dirs
+  tag="$(resolve_release_tag "$tag")"
+  log "锁定安装版本: ${tag}"
   GH_RELEASE_TAG="$tag"
   download_binary "$arch" "$tag"
   init_env_file
@@ -730,6 +732,8 @@ do_update_internal() {
   [ -f "$ENV_FILE" ] || init_env_file
   arch="$(detect_arch)"
   [ "$arch" = "unknown" ] && error "无法识别架构: $(uname -m)"
+  tag="$(resolve_release_tag "$tag")"
+  log "锁定升级版本: ${tag}"
   GH_RELEASE_TAG="$tag"
   download_binary_asset "$arch" "$tag"
   staged_binary="$DOWNLOADED_BINARY"
@@ -759,6 +763,8 @@ do_update() {
   log "在线升级：先更新管理脚本，再升级服务和二进制"
   prepare_basics
   prepare_dirs
+  tag="$(resolve_release_tag "$tag")"
+  log "锁定在线升级版本: ${tag}"
   download_manager_script "$tag"
   manager_tmp="$DOWNLOADED_MANAGER_SCRIPT"
   $SUDO install -m 0755 "$manager_tmp" "$MANAGER_SCRIPT_PATH"
@@ -769,6 +775,7 @@ do_update() {
     PANEL_ADMIN_PATH="$PANEL_ADMIN_PATH" \
     GH_REPO="$GH_REPO" \
     GH_RELEASE_TAG="$tag" \
+    MPD2HLS_LATEST_TAG="${MPD2HLS_LATEST_TAG:-}" \
     SYSTEMD_DIR="$SYSTEMD_DIR" \
     MPD2HLS_INSTALLER_URL="${MPD2HLS_INSTALLER_URL:-}" \
     bash "$MANAGER_SCRIPT_PATH" update-internal "$tag"
@@ -865,7 +872,7 @@ show_menu() {
   echo -e "${BLUE}║${NC}     ${CYAN}https://github.com/${GH_REPO}${NC}            ${BLUE}║${NC}"
   echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
   echo -e "  当前架构 : ${CYAN}${arch}${NC} ($(uname -m))"
-  echo -e "  脚本版本 : ${CYAN}${INSTALLER_RELEASE_VERSION}${NC}"
+  echo -e "  升级通道 : ${CYAN}${GH_RELEASE_TAG}${NC}"
   echo -e "  安装目录 : ${CYAN}${INSTALL_DIR}${NC}"
   echo -e "  端  口   : ${CYAN}${PANEL_PORT}${NC}  路径: ${CYAN}${PANEL_ADMIN_PATH}${NC}"
   echo -e "${BLUE}--------------------------------------------${NC}"
