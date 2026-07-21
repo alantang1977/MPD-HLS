@@ -33,8 +33,11 @@ step()  { echo -e "${MAGENTA}[STEP]${NC} ${BOLD}$*${NC}"; }
 INSTALL_DIR="${INSTALL_DIR:-/opt/mpd2hls}"
 BIN_PATH="${INSTALL_DIR}/mpd2hls"
 ENV_FILE="${INSTALL_DIR}/mpd2hls.env"
-SERVICE_NAME="mpd2hls-panel"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+SERVICE_NAME="mpd2hls"
+LEGACY_SERVICE_NAME="mpd2hls-panel"
+SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
+SERVICE_FILE="${SYSTEMD_DIR}/${SERVICE_NAME}.service"
+LEGACY_SERVICE_FILE="${SYSTEMD_DIR}/${LEGACY_SERVICE_NAME}.service"
 
 PANEL_PORT="${PANEL_PORT:-9527}"
 PANEL_ADMIN_PATH="${PANEL_ADMIN_PATH:-/admin}"
@@ -338,7 +341,7 @@ open_firewall_port() {
 
 configure_ip_port_mode() {
   step "配置 IP+端口直连访问模式 ..."
-  if [ ! -x "$BIN_PATH" ] || [ ! -f "$SERVICE_FILE" ]; then
+  if [ ! -x "$BIN_PATH" ]; then
     warn "尚未安装服务，请先执行一键安装后再开启 IP+端口模式。"
     return
   fi
@@ -382,13 +385,32 @@ configure_ip_port_mode() {
 }
 
 # ---------------- 写入 systemd 服务 ----------------
+migrate_legacy_service() {
+  local legacy_found=0
+  if [ -e "$LEGACY_SERVICE_FILE" ] || \
+     $SUDO systemctl is-active --quiet "$LEGACY_SERVICE_NAME" 2>/dev/null || \
+     $SUDO systemctl is-enabled --quiet "$LEGACY_SERVICE_NAME" 2>/dev/null; then
+    legacy_found=1
+  fi
+  [ "$legacy_found" -eq 0 ] && return 0
+
+  step "迁移旧服务 ${LEGACY_SERVICE_NAME}.service -> ${SERVICE_NAME}.service ..."
+  $SUDO systemctl disable --now "$LEGACY_SERVICE_NAME" >/dev/null 2>&1 || true
+  $SUDO rm -f "$LEGACY_SERVICE_FILE"
+  $SUDO systemctl daemon-reload
+  $SUDO systemctl reset-failed "$LEGACY_SERVICE_NAME" >/dev/null 2>&1 || true
+  log "  - 旧服务已停止、禁用并删除，避免重复监听 ${PANEL_PORT} 端口 ✅"
+}
+
 write_systemd_service() {
+  migrate_legacy_service
   step "写入 systemd 服务 $SERVICE_FILE ..."
   $SUDO tee "$SERVICE_FILE" >/dev/null <<EOF
 [Unit]
 Description=mpd2hls Panel Service
 After=network-online.target
 Wants=network-online.target
+Conflicts=${LEGACY_SERVICE_NAME}.service
 
 [Service]
 Type=simple
@@ -413,6 +435,11 @@ EOF
 
 # ---------------- 启停 ----------------
 start_service() {
+  if [ ! -f "$SERVICE_FILE" ]; then
+    write_systemd_service
+  else
+    migrate_legacy_service
+  fi
   step "启动 $SERVICE_NAME ..."
   $SUDO systemctl restart "$SERVICE_NAME"
   sleep 2
@@ -427,6 +454,7 @@ start_service() {
 stop_service() {
   step "停止 $SERVICE_NAME ..."
   $SUDO systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+  migrate_legacy_service
   log "  - 已停止"
 }
 
@@ -560,7 +588,9 @@ do_uninstall() {
   fi
   $SUDO systemctl stop "$SERVICE_NAME" 2>/dev/null || true
   $SUDO systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+  $SUDO systemctl disable --now "$LEGACY_SERVICE_NAME" 2>/dev/null || true
   $SUDO rm -f "$SERVICE_FILE"
+  $SUDO rm -f "$LEGACY_SERVICE_FILE"
   $SUDO systemctl daemon-reload || true
   $SUDO rm -rf "$INSTALL_DIR"
   log "✅ 已卸载并清理完毕"
@@ -588,6 +618,11 @@ do_status() {
   echo "  二进制: $BIN_PATH ($([ -f "$BIN_PATH" ] && du -h "$BIN_PATH" | cut -f1 || echo '未安装'))"
   echo "  配置  : $ENV_FILE"
   echo "  服务  : $SERVICE_FILE"
+  if [ -e "$LEGACY_SERVICE_FILE" ] || \
+     $SUDO systemctl is-active --quiet "$LEGACY_SERVICE_NAME" 2>/dev/null || \
+     $SUDO systemctl is-enabled --quiet "$LEGACY_SERVICE_NAME" 2>/dev/null; then
+    echo -e "  ${YELLOW}警告  : 检测到旧服务 ${LEGACY_SERVICE_NAME}.service；执行 update 或 start 会自动迁移${NC}"
+  fi
   echo "--------------------------------------------"
   $SUDO systemctl status "$SERVICE_NAME" --no-pager -n 10 2>/dev/null || true
   echo "============================================"
