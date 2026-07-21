@@ -10,7 +10,7 @@
 #  非交互一键模式:
 #    curl -fsSL ... | bash -s install      # 直接安装+启动
 #    curl -fsSL ... | bash -s uninstall    # 直接卸载
-#    curl -fsSL ... | bash -s update       # 拉最新二进制
+#    curl -fsSL ... | bash -s update       # 全自动在线升级
 # ============================================================
 set -e
 
@@ -33,6 +33,9 @@ step()  { echo -e "${MAGENTA}[STEP]${NC} ${BOLD}$*${NC}"; }
 INSTALL_DIR="${INSTALL_DIR:-/opt/mpd2hls}"
 BIN_PATH="${INSTALL_DIR}/mpd2hls"
 ENV_FILE="${INSTALL_DIR}/mpd2hls.env"
+MANAGER_SCRIPT_PATH="${INSTALL_DIR}/install.sh"
+INSTALLER_API_VERSION="2"
+INSTALLER_RELEASE_VERSION="0.0.32"
 SERVICE_NAME="mpd2hls"
 LEGACY_SERVICE_NAME="mpd2hls-panel"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
@@ -56,6 +59,17 @@ fi
 URL_AMD64="${GH_BASE}/mpd2hls"
 URL_ARM64="${GH_BASE}/mpd2hls-aarch64"
 URL_ARMV7="${GH_BASE}/mpd2hls-armv7"
+
+installer_url() {
+  local tag="${1:-$GH_RELEASE_TAG}"
+  if [ -n "${MPD2HLS_INSTALLER_URL:-}" ]; then
+    echo "$MPD2HLS_INSTALLER_URL"
+  elif [ -z "$tag" ] || [ "$tag" = "latest" ]; then
+    echo "https://github.com/${GH_REPO}/releases/latest/download/install.sh"
+  else
+    echo "https://github.com/${GH_REPO}/releases/download/${tag}/install.sh"
+  fi
+}
 
 # ---------------- sudo 检测 ----------------
 SUDO=""
@@ -196,6 +210,39 @@ download_binary() {
   $SUDO install -m 0755 "$tmp" "$BIN_PATH"
   rm -f "$tmp"
   log "  - 已安装到 $BIN_PATH ✅"
+}
+
+download_manager_script() {
+  local tag="${1:-$GH_RELEASE_TAG}"
+  local url tmp fallback_url=""
+  url="$(installer_url "$tag")"
+  tmp="/tmp/mpd2hls-install.$$"
+  rm -f "$tmp"
+  step "下载并校验最新管理脚本 ..."
+  log "  - URL: $url"
+  if ! curl -fL --progress-bar -o "$tmp" "$url"; then
+    if [ "$tag" = "latest" ] && [ -z "${MPD2HLS_INSTALLER_URL:-}" ]; then
+      fallback_url="https://raw.githubusercontent.com/${GH_REPO}/main/install.sh"
+      warn "Release 中未找到管理脚本，尝试主分支: $fallback_url"
+      if ! curl -fL --progress-bar -o "$tmp" "$fallback_url"; then
+        rm -f "$tmp"
+        error "管理脚本下载失败，现有服务和二进制未改动"
+      fi
+    else
+      rm -f "$tmp"
+      error "管理脚本下载失败，现有服务和二进制未改动"
+    fi
+  fi
+  if ! bash -n "$tmp"; then
+    rm -f "$tmp"
+    error "下载的管理脚本语法校验失败，已拒绝执行"
+  fi
+  if ! grep -q '^INSTALLER_API_VERSION="2"$' "$tmp"; then
+    rm -f "$tmp"
+    error "下载的管理脚本缺少兼容性标记，已拒绝执行"
+  fi
+  chmod 0755 "$tmp"
+  DOWNLOADED_MANAGER_SCRIPT="$tmp"
 }
 
 # ---------------- 写入环境变量配置文件 ----------------
@@ -445,9 +492,11 @@ start_service() {
   sleep 2
   if $SUDO systemctl is-active --quiet "$SERVICE_NAME"; then
     log "  - 服务运行中 ✅"
+    return 0
   else
     warn "  - 服务启动失败，请查看日志:"
     $SUDO journalctl -u "$SERVICE_NAME" -n 30 --no-pager || true
+    return 1
   fi
 }
 
@@ -456,6 +505,75 @@ stop_service() {
   $SUDO systemctl stop "$SERVICE_NAME" 2>/dev/null || true
   migrate_legacy_service
   log "  - 已停止"
+}
+
+health_check_url() {
+  local addr port scheme cert key
+  addr="$(read_env_value PANEL_ADDR || true)"
+  addr="${addr%\"}"
+  addr="${addr#\"}"
+  port="$(extract_addr_port "$addr")"
+  cert="$(read_env_value PANEL_TLS_CERT || true)"
+  key="$(read_env_value PANEL_TLS_KEY || true)"
+  scheme="http"
+  if [ -n "$cert" ] && [ -n "$key" ]; then
+    scheme="https"
+  fi
+  case "$addr" in
+    0.0.0.0:*) echo "${scheme}://127.0.0.1:${port}/api/health" ;;
+    \[::\]:*) echo "${scheme}://[::1]:${port}/api/health" ;;
+    '') echo "${scheme}://127.0.0.1:${port}/api/health" ;;
+    *) echo "${scheme}://${addr}/api/health" ;;
+  esac
+}
+
+verify_service_health() {
+  local url attempt
+  url="$(health_check_url)"
+  for attempt in $(seq 1 10); do
+    if curl -kfsS --noproxy '*' --max-time 3 "$url" >/dev/null 2>&1; then
+      log "  - 健康检查通过: $url ✅"
+      return 0
+    fi
+    sleep 1
+  done
+  warn "  - 健康检查失败: $url"
+  return 1
+}
+
+verify_update_topology() {
+  local binary_role binary_version
+  binary_role="$("$BIN_PATH" --binary-role 2>/dev/null || true)"
+  binary_version="$("$BIN_PATH" --version 2>/dev/null || true)"
+  if [ "$binary_role" != "panel" ] || [ -z "$binary_version" ]; then
+    warn "  - 二进制验证失败: role=${binary_role:-none} version=${binary_version:-none}"
+    return 1
+  fi
+  if ! $SUDO systemctl is-active --quiet "$SERVICE_NAME"; then
+    warn "  - 规范服务未处于运行状态: ${SERVICE_NAME}.service"
+    return 1
+  fi
+  if [ -e "$LEGACY_SERVICE_FILE" ] || \
+     $SUDO systemctl is-active --quiet "$LEGACY_SERVICE_NAME" 2>/dev/null || \
+     $SUDO systemctl is-enabled --quiet "$LEGACY_SERVICE_NAME" 2>/dev/null; then
+    warn "  - 旧服务仍然存在: ${LEGACY_SERVICE_NAME}.service"
+    return 1
+  fi
+  verify_service_health
+}
+
+rollback_binary_update() {
+  local backup_path="$1"
+  warn "升级验证失败，开始回滚二进制..."
+  $SUDO systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+  if [ -n "$backup_path" ] && [ -f "$backup_path" ]; then
+    $SUDO install -m 0755 "$backup_path" "$BIN_PATH"
+    $SUDO systemctl restart "$SERVICE_NAME" 2>/dev/null || true
+    warn "已恢复升级前二进制，请查看: journalctl -u ${SERVICE_NAME} -n 80 --no-pager"
+  else
+    warn "升级前没有可回滚的二进制，服务保持停止以避免运行未知版本"
+  fi
+  return 1
 }
 
 # ---------------- 提取首次启动密码 ----------------
@@ -554,22 +672,54 @@ do_install() {
   download_binary "$arch" "$tag"
   init_env_file
   write_systemd_service
-  start_service
+  start_service || error "服务启动失败，请查看 journalctl -u ${SERVICE_NAME} -n 80 --no-pager"
   print_banner "$arch"
+}
+
+do_update_internal() {
+  local tag="${1:-$GH_RELEASE_TAG}"
+  local arch rollback_path=""
+  log "全自动升级：迁移服务 + 更新二进制 + 健康验证（配置保留）"
+  prepare_dirs
+  [ -f "$ENV_FILE" ] || init_env_file
+  migrate_legacy_service
+  arch="$(detect_arch)"
+  [ "$arch" = "unknown" ] && error "无法识别架构: $(uname -m)"
+  if [ -f "$BIN_PATH" ]; then
+    rollback_path="${BIN_PATH}.rollback.$(date +%Y%m%d-%H%M%S)"
+    $SUDO cp -a "$BIN_PATH" "$rollback_path"
+  fi
+  GH_RELEASE_TAG="$tag"
+  download_binary "$arch" "$tag"
+  write_systemd_service
+  if ! start_service || ! verify_update_topology; then
+    rollback_binary_update "$rollback_path"
+    return 1
+  fi
+  [ -z "$rollback_path" ] || $SUDO rm -f "$rollback_path"
+  log "✅ 全自动升级完成：${SERVICE_NAME}.service 正在独占面板端口"
+  $SUDO systemctl status "$SERVICE_NAME" --no-pager -n 5 || true
 }
 
 do_update() {
   local tag="${1:-$GH_RELEASE_TAG}"
-  log "更新 = 拉取最新二进制 + 重启服务（配置文件保留）"
-  local arch; arch="$(detect_arch)"
-  [ "$arch" = "unknown" ] && error "无法识别架构: $(uname -m)"
-  GH_RELEASE_TAG="$tag"
-  download_binary "$arch" "$tag"
-  # 服务文件可能也要同步（避免老版本字段过时）
-  write_systemd_service
-  start_service
-  log "✅ 更新完成"
-  $SUDO systemctl status "$SERVICE_NAME" --no-pager -n 5 || true
+  local manager_tmp
+  log "在线升级：先更新管理脚本，再升级服务和二进制"
+  prepare_basics
+  prepare_dirs
+  download_manager_script "$tag"
+  manager_tmp="$DOWNLOADED_MANAGER_SCRIPT"
+  $SUDO install -m 0755 "$manager_tmp" "$MANAGER_SCRIPT_PATH"
+  rm -f "$manager_tmp"
+  log "  - 最新管理脚本已安装: $MANAGER_SCRIPT_PATH ✅"
+  INSTALL_DIR="$INSTALL_DIR" \
+    PANEL_PORT="$PANEL_PORT" \
+    PANEL_ADMIN_PATH="$PANEL_ADMIN_PATH" \
+    GH_REPO="$GH_REPO" \
+    GH_RELEASE_TAG="$tag" \
+    SYSTEMD_DIR="$SYSTEMD_DIR" \
+    MPD2HLS_INSTALLER_URL="${MPD2HLS_INSTALLER_URL:-}" \
+    bash "$MANAGER_SCRIPT_PATH" update-internal "$tag"
 }
 
 do_uninstall() {
@@ -663,12 +813,13 @@ show_menu() {
   echo -e "${BLUE}║${NC}     ${CYAN}https://github.com/${GH_REPO}${NC}            ${BLUE}║${NC}"
   echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
   echo -e "  当前架构 : ${CYAN}${arch}${NC} ($(uname -m))"
+  echo -e "  脚本版本 : ${CYAN}${INSTALLER_RELEASE_VERSION}${NC}"
   echo -e "  安装目录 : ${CYAN}${INSTALL_DIR}${NC}"
   echo -e "  端  口   : ${CYAN}${PANEL_PORT}${NC}  路径: ${CYAN}${PANEL_ADMIN_PATH}${NC}"
   echo -e "${BLUE}--------------------------------------------${NC}"
   echo -e "  ${GREEN}1)${NC}  一键安装 (自动识别架构)        ${YELLOW}★ 推荐${NC}"
   echo -e "  ${GREEN}2)${NC}  指定架构安装 (amd64 / arm64 / armv7)"
-  echo -e "  ${GREEN}3)${NC}  更新到最新版 (重新下载二进制)"
+  echo -e "  ${GREEN}3)${NC}  全自动在线升级 (脚本+二进制+服务迁移)"
   echo -e "  ${GREEN}4)${NC}  启动服务"
   echo -e "  ${GREEN}5)${NC}  停止服务"
   echo -e "  ${GREEN}6)${NC}  查看运行状态"
@@ -719,6 +870,7 @@ case "${1:-}" in
   install-armv7)      do_install armv7 "${2:-$GH_RELEASE_TAG}" ;;
   ip-port|ipport|public-bind) configure_ip_port_mode ;;
   update)             do_update "${2:-$GH_RELEASE_TAG}" ;;
+  update-internal)    do_update_internal "${2:-$GH_RELEASE_TAG}" ;;
   start)              start_service ;;
   stop)               stop_service ;;
   restart)            stop_service; start_service ;;
@@ -735,7 +887,7 @@ mpd2hls 一键安装脚本
   bash $0                  # 交互菜单 (默认)
   bash $0 install [arch]   # 安装 (arch: auto|amd64|arm64|armv7)
   bash $0 ip-port          # 开启/修改 IP+端口直连访问模式
-  bash $0 update           # 更新到最新版
+  bash $0 update           # 全自动在线升级并验证服务
   bash $0 start|stop       # 启停服务
   bash $0 restart          # 重启服务
   bash $0 status           # 查看状态
@@ -755,7 +907,7 @@ mpd2hls 一键安装脚本
   bash $0 install 0.2.33
   bash $0 install amd64 0.2.33
   bash $0 install-version 0.2.33
-  bash $0 update 0.2.33
+  bash $0 update 0.0.32
   PANEL_PORT=18080 bash $0 install amd64
   bash $0 ip-port
 EOF
