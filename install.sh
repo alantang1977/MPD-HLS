@@ -34,7 +34,7 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/mpd2hls}"
 BIN_PATH="${INSTALL_DIR}/mpd2hls"
 ENV_FILE="${INSTALL_DIR}/mpd2hls.env"
 MANAGER_SCRIPT_PATH="${INSTALL_DIR}/install.sh"
-INSTALLER_API_VERSION="2"
+INSTALLER_API_VERSION="3"
 INSTALLER_RELEASE_VERSION="0.0.32"
 SERVICE_NAME="mpd2hls"
 LEGACY_SERVICE_NAME="mpd2hls-panel"
@@ -47,18 +47,25 @@ PANEL_ADMIN_PATH="${PANEL_ADMIN_PATH:-/admin}"
 GH_REPO="${GH_REPO:-judy-gotv/MPD-HLS}"
 
 # GitHub Releases - latest 自动指向最新版本
-GH_REPO="${GH_REPO:-judy-gotv/MPD-HLS}"
 GH_RELEASE_TAG="${GH_RELEASE_TAG:-latest}"
-if [ "$GH_RELEASE_TAG" = "latest" ]; then
-  GH_BASE="https://github.com/${GH_REPO}/releases/latest/download"
-else
-  GH_BASE="https://github.com/${GH_REPO}/releases/download/${GH_RELEASE_TAG}"
-fi
 
-# 三个架构对应的二进制文件名（与 release 资产名一致）
-URL_AMD64="${GH_BASE}/mpd2hls"
-URL_ARM64="${GH_BASE}/mpd2hls-aarch64"
-URL_ARMV7="${GH_BASE}/mpd2hls-armv7"
+release_tag_path() {
+  local tag="$1"
+  case "$tag" in
+    ''|latest|v*) echo "${tag:-latest}" ;;
+    [0-9]*) echo "v${tag}" ;;
+    *) echo "$tag" ;;
+  esac
+}
+
+expected_release_version() {
+  local tag="$1"
+  case "$tag" in
+    ''|latest) echo "$INSTALLER_RELEASE_VERSION" ;;
+    v*) echo "${tag#v}" ;;
+    *) echo "$tag" ;;
+  esac
+}
 
 installer_url() {
   local tag="${1:-$GH_RELEASE_TAG}"
@@ -67,7 +74,7 @@ installer_url() {
   elif [ -z "$tag" ] || [ "$tag" = "latest" ]; then
     echo "https://github.com/${GH_REPO}/releases/latest/download/install.sh"
   else
-    echo "https://github.com/${GH_REPO}/releases/download/${tag}/install.sh"
+    echo "https://github.com/${GH_REPO}/releases/download/$(release_tag_path "$tag")/install.sh"
   fi
 }
 
@@ -99,7 +106,7 @@ arch_url() {
   if [ -z "$tag" ] || [ "$tag" = "latest" ]; then
     base="https://github.com/${GH_REPO}/releases/latest/download"
   else
-    base="https://github.com/${GH_REPO}/releases/download/${tag}"
+    base="https://github.com/${GH_REPO}/releases/download/$(release_tag_path "$tag")"
   fi
   case "$1" in
     amd64) echo "${base}/mpd2hls" ;;
@@ -178,10 +185,11 @@ prepare_dirs() {
 }
 
 # ---------------- 下载二进制 ----------------
-download_binary() {
+download_binary_asset() {
   local arch="$1"
   local tag="${2:-$GH_RELEASE_TAG}"
-  local url; url="$(arch_url "$arch" "$tag")"
+  local url expected_version binary_version actual_version
+  url="$(arch_url "$arch" "$tag")"
   [ -z "$url" ] && error "不支持的架构: $arch"
 
   step "下载 $arch 二进制 ..."
@@ -201,6 +209,24 @@ download_binary() {
     error "下载的文件不是后台 panel 二进制，已拒绝安装，避免 systemd 重启循环"
   fi
   log "  - 二进制角色校验: panel ✅"
+  binary_version="$("$tmp" --version 2>/dev/null || true)"
+  actual_version="${binary_version##* }"
+  expected_version="$(expected_release_version "$tag")"
+  if [ "$actual_version" != "$expected_version" ]; then
+    rm -f "$tmp"
+    error "二进制版本不匹配：期望 ${expected_version}，实际 ${actual_version:-unknown}；现有服务未改动"
+  fi
+  log "  - 二进制版本校验: ${actual_version} ✅"
+
+  DOWNLOADED_BINARY="$tmp"
+}
+
+download_binary() {
+  local arch="$1"
+  local tag="${2:-$GH_RELEASE_TAG}"
+  local tmp
+  download_binary_asset "$arch" "$tag"
+  tmp="$DOWNLOADED_BINARY"
 
   # 备份旧二进制
   if [ -f "$BIN_PATH" ]; then
@@ -212,35 +238,44 @@ download_binary() {
   log "  - 已安装到 $BIN_PATH ✅"
 }
 
+validate_manager_script() {
+  local path="$1"
+  bash -n "$path" && \
+    grep -q '^INSTALLER_API_VERSION="3"$' "$path" && \
+    grep -Eq '^INSTALLER_RELEASE_VERSION="[^"]+"$' "$path"
+}
+
 download_manager_script() {
   local tag="${1:-$GH_RELEASE_TAG}"
-  local url tmp fallback_url=""
+  local url tmp fallback_url="" manager_version expected_version
   url="$(installer_url "$tag")"
   tmp="/tmp/mpd2hls-install.$$"
   rm -f "$tmp"
   step "下载并校验最新管理脚本 ..."
   log "  - URL: $url"
-  if ! curl -fL --progress-bar -o "$tmp" "$url"; then
+  if ! curl -fL --progress-bar -o "$tmp" "$url" || ! validate_manager_script "$tmp"; then
     if [ "$tag" = "latest" ] && [ -z "${MPD2HLS_INSTALLER_URL:-}" ]; then
       fallback_url="https://raw.githubusercontent.com/${GH_REPO}/main/install.sh"
-      warn "Release 中未找到管理脚本，尝试主分支: $fallback_url"
-      if ! curl -fL --progress-bar -o "$tmp" "$fallback_url"; then
+      warn "Release 管理脚本缺失或不兼容，尝试主分支: $fallback_url"
+      rm -f "$tmp"
+      if ! curl -fL --progress-bar -o "$tmp" "$fallback_url" || ! validate_manager_script "$tmp"; then
         rm -f "$tmp"
-        error "管理脚本下载失败，现有服务和二进制未改动"
+        error "管理脚本下载或兼容性校验失败，现有服务和二进制未改动"
       fi
     else
       rm -f "$tmp"
-      error "管理脚本下载失败，现有服务和二进制未改动"
+      error "管理脚本下载或兼容性校验失败，现有服务和二进制未改动"
     fi
   fi
-  if ! bash -n "$tmp"; then
-    rm -f "$tmp"
-    error "下载的管理脚本语法校验失败，已拒绝执行"
+  manager_version="$(sed -n 's/^INSTALLER_RELEASE_VERSION="\([^"]*\)"$/\1/p' "$tmp" | head -1)"
+  if [ "$tag" != "latest" ] && [ -n "$tag" ]; then
+    expected_version="$(expected_release_version "$tag")"
+    if [ "$manager_version" != "$expected_version" ]; then
+      rm -f "$tmp"
+      error "管理脚本版本不匹配：期望 ${expected_version}，实际 ${manager_version:-unknown}"
+    fi
   fi
-  if ! grep -q '^INSTALLER_API_VERSION="2"$' "$tmp"; then
-    rm -f "$tmp"
-    error "下载的管理脚本缺少兼容性标记，已拒绝执行"
-  fi
+  log "  - 管理脚本版本校验: ${manager_version} ✅"
   chmod 0755 "$tmp"
   DOWNLOADED_MANAGER_SCRIPT="$tmp"
 }
@@ -443,16 +478,16 @@ migrate_legacy_service() {
 
   step "迁移旧服务 ${LEGACY_SERVICE_NAME}.service -> ${SERVICE_NAME}.service ..."
   $SUDO systemctl disable --now "$LEGACY_SERVICE_NAME" >/dev/null 2>&1 || true
-  $SUDO rm -f "$LEGACY_SERVICE_FILE"
-  $SUDO systemctl daemon-reload
+  $SUDO rm -f "$LEGACY_SERVICE_FILE" || return 1
+  $SUDO systemctl daemon-reload || return 1
   $SUDO systemctl reset-failed "$LEGACY_SERVICE_NAME" >/dev/null 2>&1 || true
   log "  - 旧服务已停止、禁用并删除，避免重复监听 ${PANEL_PORT} 端口 ✅"
 }
 
 write_systemd_service() {
-  migrate_legacy_service
+  migrate_legacy_service || return 1
   step "写入 systemd 服务 $SERVICE_FILE ..."
-  $SUDO tee "$SERVICE_FILE" >/dev/null <<EOF
+  if ! $SUDO tee "$SERVICE_FILE" >/dev/null <<EOF
 [Unit]
 Description=mpd2hls Panel Service
 After=network-online.target
@@ -475,8 +510,11 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 EOF
-  $SUDO systemctl daemon-reload
-  $SUDO systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
+  then
+    return 1
+  fi
+  $SUDO systemctl daemon-reload || return 1
+  $SUDO systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || return 1
   log "  - 已写入并启用开机自启 ✅"
 }
 
@@ -515,6 +553,10 @@ health_check_url() {
   port="$(extract_addr_port "$addr")"
   cert="$(read_env_value PANEL_TLS_CERT || true)"
   key="$(read_env_value PANEL_TLS_KEY || true)"
+  cert="${cert%\"}"
+  cert="${cert#\"}"
+  key="${key%\"}"
+  key="${key#\"}"
   scheme="http"
   if [ -n "$cert" ] && [ -n "$key" ]; then
     scheme="https"
@@ -551,6 +593,10 @@ verify_update_topology() {
   fi
   if ! $SUDO systemctl is-active --quiet "$SERVICE_NAME"; then
     warn "  - 规范服务未处于运行状态: ${SERVICE_NAME}.service"
+    return 1
+  fi
+  if ! $SUDO systemctl is-enabled --quiet "$SERVICE_NAME"; then
+    warn "  - 规范服务未启用开机自启: ${SERVICE_NAME}.service"
     return 1
   fi
   if [ -e "$LEGACY_SERVICE_FILE" ] || \
@@ -678,21 +724,27 @@ do_install() {
 
 do_update_internal() {
   local tag="${1:-$GH_RELEASE_TAG}"
-  local arch rollback_path=""
+  local arch rollback_path="" staged_binary
   log "全自动升级：迁移服务 + 更新二进制 + 健康验证（配置保留）"
   prepare_dirs
   [ -f "$ENV_FILE" ] || init_env_file
-  migrate_legacy_service
   arch="$(detect_arch)"
   [ "$arch" = "unknown" ] && error "无法识别架构: $(uname -m)"
+  GH_RELEASE_TAG="$tag"
+  download_binary_asset "$arch" "$tag"
+  staged_binary="$DOWNLOADED_BINARY"
   if [ -f "$BIN_PATH" ]; then
     rollback_path="${BIN_PATH}.rollback.$(date +%Y%m%d-%H%M%S)"
     $SUDO cp -a "$BIN_PATH" "$rollback_path"
   fi
-  GH_RELEASE_TAG="$tag"
-  download_binary "$arch" "$tag"
-  write_systemd_service
-  if ! start_service || ! verify_update_topology; then
+  if ! $SUDO install -m 0755 "$staged_binary" "$BIN_PATH"; then
+    rm -f "$staged_binary"
+    rollback_binary_update "$rollback_path" || true
+    error "安装新二进制失败，已尝试恢复升级前版本"
+  fi
+  rm -f "$staged_binary"
+  log "  - 已安装到 $BIN_PATH ✅"
+  if ! write_systemd_service || ! start_service || ! verify_update_topology; then
     rollback_binary_update "$rollback_path"
     return 1
   fi
